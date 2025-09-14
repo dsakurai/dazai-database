@@ -15,7 +15,6 @@ AUTHOR_PAGE = f"https://www.aozora.gr.jp/index_pages/{author_file}"
 OUT_XHTML_RAW_DIR = Path("out/xhtml_raw")  # newly added raw (original encoding) files
 OUT_XHTML_DIR = Path("out/xhtml")          # UTF-8 normalized outputs
 METADATA_JSON = Path("out/cards_metadata.json")
-MANIFEST = Path("out/manifest.csv")
 REQUEST_DELAY_SEC = float(os.environ.get("REQUEST_DELAY_SEC", "0.6"))
 USER_AGENT = "SCons-Dazai-XHTML/2.0 (+academic use)"
 
@@ -27,7 +26,7 @@ except ValueError:
 env = Environment(ENV={'PATH': os.environ.get('PATH','')})
 
 def ensure_dirs():
-    for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
+    for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR]:
         p.mkdir(parents=True, exist_ok=True)
 
 def fix_mojibake(s: str) -> str:
@@ -128,23 +127,6 @@ def extract_xhtml_from_card(card_url: str):
             link = urljoin(card_url, a.get('href'))
     return title, link, enc
 
-def decode_html(raw: bytes) -> str:
-    head = raw[:2048].decode('ascii', errors='ignore')
-    m = re.search(r'charset=([A-Za-z0-9_\-]+)', head, re.IGNORECASE)
-    hint = m.group(1).lower() if m else None
-    candidates = []
-    if hint:
-        candidates.append(hint)
-    for c in ['utf-8','cp932','shift_jis','euc_jp']:
-        if c not in candidates:
-            candidates.append(c)
-    for enc in candidates:
-        try:
-            return raw.decode(enc)
-        except Exception:
-            pass
-    return raw.decode('utf-8', errors='replace')
-
 def normalize_meta_charset(html: str) -> str:
     html2 = re.sub(r'charset=([A-Za-z0-9_\-]+)', 'charset=UTF-8', html, flags=re.IGNORECASE)
     if 'charset=' not in html2.lower():
@@ -201,7 +183,7 @@ def action_convert_xhtml(target, source, env):
     raw = raw_file.read_bytes()
     if len(raw) == 0:
         raise RuntimeError(f"Raw XHTML file is empty: {raw_file}")
-    decoded = decode_html(raw)
+    decoded = raw.decode('shift_jis')
     decoded = normalize_meta_charset(decoded)
     # Normalize XML declaration encoding to UTF-8 if present
     # We avoid brittle regex for entire document by only touching the XML declaration line if it exists.
@@ -251,17 +233,6 @@ for row in meta_data:
 
     xhtml_targets_as_utf8.append(xhtml_utf8)
 
-def action_write_manifest(target, source, env):
-    ensure_dirs()
-    with MANIFEST.open('w', newline='', encoding='utf-8') as f:
-        w = csv.writer(f)
-        w.writerow(["card_id","title","xhtml_url","saved_path","encoding_hint"])
-        for row in manifest_rows:
-            w.writerow(row)
-    return None
-
-Manifest = env.Command(str(MANIFEST), xhtml_targets_as_utf8, Action(action_write_manifest, cmdstr="write manifest"))
-
 # ---------------- Validation: ensure UTF-8 XML declaration ----------------
 def action_validate_utf8_decl(target, source, env):
     errors = []
@@ -290,6 +261,6 @@ def action_validate_utf8_decl(target, source, env):
 
 ValidateUTF8Decl = env.Command('out/validate_utf8_decl.ok', xhtml_targets_as_utf8, Action(action_validate_utf8_decl, cmdstr="validate utf8 decl")) if xhtml_targets_as_utf8 else []
 
-Default([Metadata] + xhtml_targets_as_utf8 + ([Manifest] if Manifest else []) + ([ValidateUTF8Decl] if ValidateUTF8Decl else []))
+Default([Metadata] + xhtml_targets_as_utf8 + [ValidateUTF8Decl])
 
 print(f"Phase summary: metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets_as_utf8)} (single-pass)")
