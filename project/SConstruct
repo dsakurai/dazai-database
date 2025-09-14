@@ -1,0 +1,236 @@
+# SConstruct
+# Fetch all Osamu Dazai (person 35) works as XHTML from Aozora Bunko.
+# Outputs to out/xhtml/*.html and out/manifest.csv
+
+import os, time, re, csv
+from urllib.parse import urljoin
+from pathlib import Path
+
+# Config
+AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
+OUT_DIR = Path("out/xhtml")
+MANIFEST = Path("out/manifest.csv")
+REQUEST_DELAY_SEC = 0.6   # be polite to the server
+USER_AGENT = "SCons-Dazai-XHTML/1.0 (+for academic use; contact if needed)"
+
+# Lazy imports (SCons runs Python)
+import requests
+from bs4 import BeautifulSoup
+
+env = Environment(ENV = {'PATH': os.environ.get('PATH', '')})
+
+# Optional limit to speed up iterative development. Set environment variable
+# MAX_ITEMS=N to restrict the number of works processed (0 = no limit).
+try:
+    MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "0"))
+except ValueError:
+    MAX_ITEMS = 0
+
+# Ensure output dirs
+def ensure_dirs():
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+
+def get_soup(url):
+    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+    r.raise_for_status()
+    # author/card pages are UTF-8; downloaded XHTML files can be Shift_JIS.
+    return BeautifulSoup(r.text, "html.parser")
+
+def list_card_urls():
+    """Return list of (title, card_url) from the author page."""
+    soup = get_soup(AUTHOR_PAGE)
+    cards = []
+    
+    # Dazai is person 35; his works are linked under /cards/000035/cardXXXX.html
+    # The author page lists works as links to .../cards/000035/cardXXXX.html or directly to files.
+    for a in soup.select('a[href*="/cards/000035/card"]'):
+        href = a.get('href')
+        if not href:
+            continue
+        title = a.get_text(strip=True)
+        url = urljoin(AUTHOR_PAGE, href)
+        cards.append((title, url))
+    # dedupe while preserving order
+    seen, uniq = set(), []
+    for t,u in cards:
+        if u not in seen:
+            uniq.append((t,u))
+            seen.add(u)
+    return uniq
+
+def extract_xhtml_info(card_url):
+    """From a card page, find the XHTML file link and encoding hint."""
+    soup = get_soup(card_url)
+    # Primary: the table under "ファイルのダウンロード" has an 'XHTMLファイル' entry.
+    link = None
+    enc = None
+    title = soup.select_one("h1").get_text(strip=True) if soup.select_one("h1") else ""
+    # Scan rows that mention 'XHTML' and 'html'
+    for tr in soup.find_all('tr'):
+        txt = tr.get_text(" ", strip=True)
+        if "XHTML" in txt:
+            a = tr.find('a')
+            if a and a.get('href') and a.get('href').endswith(".html"):
+                link = urljoin(card_url, a['href'])
+                # try to find encoding hint on the row
+                m = re.search(r'(ShiftJIS|UTF-8|JIS X 0208)', txt, re.IGNORECASE)
+                enc = m.group(1) if m else None
+                break
+    # Fallback (rare): the inline "いますぐXHTML版で読む" link points to files/...html
+    if not link:
+        a = soup.find('a', string=lambda s: s and "XHTML" in s)
+        if a and a.get('href'):
+            link = urljoin(card_url, a.get('href'))
+    return title, link, enc
+
+def slugify(s):
+    s = s.strip()
+    s = re.sub(r'\s+', '_', s)
+    s = re.sub(r'[^\w\- _\u3040-\u30ff\u4e00-\u9faf]', '', s)
+    return s[:60] if len(s) > 60 else (s or 'untitled')
+
+def fix_mojibake(s: str) -> str:
+    """Heuristically repair common mojibake variants.
+
+    Tries these transformations (first that yields Japanese chars wins):
+    1. Interpret current code points as Latin-1 bytes -> UTF-8
+    2. Interpret as Latin-1 bytes -> cp932 (Shift_JIS superset)
+    3. Interpret as cp932 bytes -> UTF-8
+    Otherwise returns original.
+    """
+    if not s:
+        return s
+
+    def has_jp(txt: str) -> bool:
+        return bool(re.search(r'[\u3040-\u30FF\u4E00-\u9FAF]', txt))
+
+    if has_jp(s):  # already good
+        return s
+
+    candidates = []
+    try:
+        candidates.append(s.encode('latin-1').decode('utf-8'))
+    except Exception:
+        pass
+    try:
+        candidates.append(s.encode('latin-1').decode('cp932'))
+    except Exception:
+        pass
+    try:
+        candidates.append(s.encode('cp932').decode('utf-8'))
+    except Exception:
+        pass
+    for cand in candidates:
+        if has_jp(cand):
+            return cand
+    return s
+
+def fetch_file(target, source, env):
+    """Action: download a single XHTML file to target[0] and normalize to UTF-8.
+
+    Source is a Value node containing the URL string only (simpler / robust).
+    We heuristically detect encoding from:
+      1. Declared meta charset in first KB of content (raw bytes)
+      2. Common Japanese encodings fallback list
+    """
+    src_node = source[0]
+    # Value nodes don't expose a uniform API; str(node) yields stored value for Value.
+    url = str(src_node)
+
+    tgt = Path(str(target[0]))
+    ensure_dirs()
+    time.sleep(REQUEST_DELAY_SEC)
+    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=60)
+    r.raise_for_status()
+    raw = r.content
+    # Try to extract a charset from the raw bytes (simple regex over ASCII range)
+    enc_hint = None
+    head_segment = raw[:2048].decode('ascii', errors='ignore')
+    m_meta = re.search(r'charset=([A-Za-z0-9_\-]+)', head_segment, re.IGNORECASE)
+    if m_meta:
+        enc_hint = m_meta.group(1).lower()
+
+    candidates = []
+    if enc_hint:
+        candidates.append(enc_hint)
+    # Prioritize typical Japanese encodings after any hint
+    for c in ['utf-8', 'cp932', 'shift_jis', 'euc_jp']:
+        if c not in candidates:
+            candidates.append(c)
+
+    decoded = None
+    used_enc = None
+    for enc in candidates:
+        try:
+            decoded = raw.decode(enc)
+            used_enc = enc
+            break
+        except Exception:
+            continue
+    if decoded is None:
+        # Last resort: replace errors as utf-8
+        decoded = raw.decode('utf-8', errors='replace')
+        used_enc = 'utf-8?'
+
+    # Ensure meta charset is UTF-8 (simple replacement/insertion)
+    def ensure_meta_utf8(html: str) -> str:
+        # Replace existing charset declarations
+        html2 = re.sub(r'charset=([A-Za-z0-9_\-]+)', 'charset=UTF-8', html, flags=re.IGNORECASE)
+        if 'charset=' not in html2.lower():
+            # insert in head
+            html2 = re.sub(r'<head(.*?)>', r'<head\1><meta charset="UTF-8">', html2, count=1, flags=re.IGNORECASE)
+        return html2
+
+    normalized = ensure_meta_utf8(decoded)
+    tgt.write_text(normalized, encoding='utf-8')
+    return None
+
+Fetch = Builder(action=Action(fetch_file, cmdstr="${SOURCE} -> ${TARGET}"))
+env.Append(BUILDERS={'Fetch': Fetch})
+
+# Discover all works
+card_list = list_card_urls()
+if MAX_ITEMS > 0:
+    card_list = card_list[:MAX_ITEMS]
+
+# For manifest
+manifest_rows = []
+
+# Create targets
+all_targets = []
+for (title, card_url) in card_list:
+    try:
+        t, xhtml_url, enc = extract_xhtml_info(card_url)
+        if not xhtml_url:
+            continue
+        # Derive a short name using card id if present
+        m = re.search(r'card(\d+)\.html', card_url)
+        card_id = m.group(1) if m else "unknown"
+        raw_title = t or title
+        repaired_title = fix_mojibake(raw_title)
+        base = f"{card_id}_{slugify(repaired_title)}.html"
+        out_path = OUT_DIR / base
+        # Use Value node for the URL so SCons won't treat it as a file path.
+        tgt = env.Fetch(str(out_path), env.Value(xhtml_url))
+        # Record for manifest
+        manifest_rows.append([card_id, (t or title), xhtml_url, str(out_path), enc or ""])
+        all_targets.append(tgt)
+    except Exception:
+        # Skip failures but continue; partial success acceptable
+        pass
+
+# Emit manifest as a separate target that depends on all downloads
+def write_manifest(target, source, env):
+    ensure_dirs()
+    with MANIFEST.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["card_id","title","xhtml_url","saved_path","encoding_hint"])
+        for row in manifest_rows:
+            w.writerow(row)
+    return None
+
+Manifest = env.Command(str(MANIFEST), [t for t in all_targets], Action(write_manifest, cmdstr="write manifest"))
+
+Default([t for t in all_targets] + [Manifest])
+print(f"Discovered {len(all_targets)} XHTML targets.")
