@@ -40,6 +40,9 @@
 
           # Pass the virtual environment to poetry
           poetry env use $(which python)
+          
+          // Ollama
+          export OLLAMA_HOST=http://host.containers.internal:11434
 
           poetry install --no-root
         '';
