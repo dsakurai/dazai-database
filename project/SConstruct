@@ -13,7 +13,8 @@ from bs4 import BeautifulSoup
 AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
 RAW_DIR = Path("out/raw")
 RAW_AUTHOR = RAW_DIR / "person35.html"
-OUT_XHTML_DIR = Path("out/xhtml")
+OUT_XHTML_RAW_DIR = Path("out/xhtml_raw")  # newly added raw (original encoding) files
+OUT_XHTML_DIR = Path("out/xhtml")          # UTF-8 normalized outputs
 METADATA_JSON = Path("out/cards_metadata.json")
 MANIFEST = Path("out/manifest.csv")
 REQUEST_DELAY_SEC = float(os.environ.get("REQUEST_DELAY_SEC", "0.6"))
@@ -28,7 +29,7 @@ except ValueError:
 env = Environment(ENV={'PATH': os.environ.get('PATH','')})
 
 def ensure_dirs():
-    for p in [RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
+    for p in [RAW_DIR, OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
         p.mkdir(parents=True, exist_ok=True)
 
 def slugify(s: str) -> str:
@@ -136,42 +137,77 @@ def normalize_meta_charset(html: str) -> str:
         html2 = re.sub(r'<head(.*?)>', r'<head\1><meta charset="UTF-8">', html2, count=1, flags=re.IGNORECASE)
     return html2
 
-manifest_rows = []  # populated during fetch actions
+manifest_rows = []  # populated during conversion actions
 
-def action_fetch_xhtml(target, source, env):
-    # Value nodes stringify to their stored Python object representation; we stored a dict.
-    raw = str(source[0])
-    # Safely parse: try json first, else fallback to literal_eval.
-    data = None
+def parse_value_dict(val_node):
+    raw = str(val_node)
     try:
-        data = json.loads(raw.replace("'", '"')) if raw.startswith('{') else None
+        if raw.startswith('{'):
+            return json.loads(raw.replace("'", '"'))
     except Exception:
-        data = None
-    if data is None:
-        try:
-            import ast
-            data = ast.literal_eval(raw)
-        except Exception:
-            raise RuntimeError(f"Unable to parse source Value for XHTML fetch: {raw}")
-    card_url = data.get('card_url')
-    title_guess = data.get('title_guess')
+        pass
+    try:
+        import ast
+        return ast.literal_eval(raw)
+    except Exception:
+        raise RuntimeError(f"Unable to parse Value node: {raw}")
+
+def action_fetch_xhtml_raw(target, source, env):
+    """Download raw XHTML bytes (no decoding) from card page-discovered link."""
+    meta = parse_value_dict(source[0])  # {'card_url','title_guess'}
+    card_url = meta['card_url']
+    title_guess = meta['title_guess']
     time.sleep(REQUEST_DELAY_SEC)
     title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
     if not xhtml_url:
+        # create empty file to satisfy target to avoid re-fetch loop
+        Path(str(target[0])).write_bytes(b"")
         return None
     r = requests.get(xhtml_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
-    decoded = decode_html(r.content)
+    Path(str(target[0])).write_bytes(r.content)
+    # store lightweight metadata sidecar (encoding hint & better title) for conversion stage
+    sidecar = Path(str(target[0]))
+    sidecar_meta = sidecar.with_suffix(sidecar.suffix + '.json')
+    sidecar_meta.write_text(json.dumps({
+        'card_url': card_url,
+        'xhtml_url': xhtml_url,
+        'title_guess': title_guess,
+        'title_card': title_card,
+        'enc_hint': enc_hint
+    }, ensure_ascii=False, indent=2), encoding='utf-8')
+    return None
+
+def action_convert_xhtml(target, source, env):
+    """Convert previously downloaded raw XHTML bytes to normalized UTF-8 HTML."""
+    raw_file = Path(str(source[0]))
+    value_node = source[1]
+    meta = parse_value_dict(value_node)
+    # prefer sidecar for richer info
+    sidecar_meta_path = raw_file.with_suffix(raw_file.suffix + '.json')
+    if sidecar_meta_path.exists():
+        try:
+            meta_sc = json.loads(sidecar_meta_path.read_text(encoding='utf-8'))
+            meta.update(meta_sc)
+        except Exception:
+            pass
+    card_url = meta.get('card_url')
+    title_guess = meta.get('title_guess')
+    title_card = meta.get('title_card')
+    enc_hint = meta.get('enc_hint')
+    raw = raw_file.read_bytes()
+    decoded = decode_html(raw)
     decoded = normalize_meta_charset(decoded)
     final_title = fix_mojibake(title_card or title_guess)
     Path(str(target[0])).write_text(decoded, encoding='utf-8')
-    m = re.search(r'card(\d+)\.html', card_url)
-    card_id = m.group(1) if m else 'unknown'
-    manifest_rows.append([card_id, final_title, xhtml_url, str(target[0]), enc_hint or ''])
+    m_id = re.search(r'card(\d+)\.html', card_url or '')
+    card_id = m_id.group(1) if m_id else 'unknown'
+    manifest_rows.append([card_id, final_title, meta.get('xhtml_url',''), str(target[0]), enc_hint or ''])
     return None
 
-FetchXHTML = Builder(action=Action(action_fetch_xhtml, cmdstr="CARD ${SOURCE} -> ${TARGET}"))
-env.Append(BUILDERS={'FetchXHTML': FetchXHTML})
+FetchXHTMLRaw = Builder(action=Action(action_fetch_xhtml_raw, cmdstr="RAW ${SOURCE} -> ${TARGET}"))
+ConvertXHTML = Builder(action=Action(action_convert_xhtml, cmdstr="CONVERT ${SOURCES} -> ${TARGET}"))
+env.Append(BUILDERS={'FetchXHTMLRaw': FetchXHTMLRaw, 'ConvertXHTML': ConvertXHTML})
 
 # Schedule XHTML targets if metadata already exists at parse time
 if METADATA_JSON.exists():
@@ -185,18 +221,27 @@ else:
 if MAX_ITEMS>0 and meta_data:
     meta_data = meta_data[:MAX_ITEMS]
 
-xhtml_targets = []
+raw_targets = []
+converted_targets = []
 for row in meta_data:
     card_url = row['card_url']
     title_guess = row['title_guess']
     m = re.search(r'card(\d+)\.html', card_url)
     card_id = m.group(1) if m else 'unknown'
     base = f"{card_id}_{slugify(fix_mojibake(title_guess))}.html"
-    tgt_path = OUT_XHTML_DIR / base
+    raw_path = OUT_XHTML_RAW_DIR / base
+    final_path = OUT_XHTML_DIR / base
     ensure_dirs()
-    tgt = env.FetchXHTML(str(tgt_path), env.Value({'card_url': card_url, 'title_guess': title_guess}))
-    env.Depends(tgt, Metadata)
-    xhtml_targets.append(tgt)
+    val = env.Value({'card_url': card_url, 'title_guess': title_guess})
+    raw_tgt = env.FetchXHTMLRaw(str(raw_path), val)
+    env.Depends(raw_tgt, Metadata)
+    conv_tgt = env.ConvertXHTML(str(final_path), [raw_tgt, val])
+    env.Depends(conv_tgt, raw_tgt)
+    raw_targets.append(raw_tgt)
+    converted_targets.append(conv_tgt)
+
+# For compatibility with existing code, treat converted targets as xhtml_targets
+xhtml_targets = converted_targets
 
 def action_write_manifest(target, source, env):
     ensure_dirs()
