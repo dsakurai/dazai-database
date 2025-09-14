@@ -54,14 +54,29 @@ def fix_mojibake(s: str) -> str:
             return c
     return s
 
-# -------- Phase 1: Fetch author page (parse time, not a target) & build metadata list --------
-print("[parse] Fetching author page for metadata enumeration ...")
-try:
-    _resp_author = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
-    _resp_author.raise_for_status()
-    _author_html = _resp_author.text
-except Exception as e:
-    raise RuntimeError(f"Unable to fetch author page: {e}")
+# -------- Phase 1: Fetch author page (parse time) with local cache & build metadata list --------
+CACHE_DIR = Path("out/cache")
+CACHE_AUTHOR = CACHE_DIR / "person35.html"
+REFRESH_AUTHOR = os.environ.get("REFRESH_AUTHOR") == "1"
+
+def fetch_author_html():
+    if CACHE_AUTHOR.exists() and not REFRESH_AUTHOR:
+        try:
+            return CACHE_AUTHOR.read_text(encoding='utf-8', errors='ignore'), True
+        except Exception:
+            pass
+    print("[parse] Downloading author page ...")
+    r = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
+    r.raise_for_status()
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        CACHE_AUTHOR.write_text(r.text, encoding='utf-8')
+    except Exception:
+        pass
+    return r.text, False
+
+_author_html, _from_cache = fetch_author_html()
+print(f"[parse] Author page source: {'cache' if _from_cache else 'network'}")
 
 _soup = BeautifulSoup(_author_html, 'html.parser')
 _rows = []
