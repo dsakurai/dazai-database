@@ -139,9 +139,22 @@ def normalize_meta_charset(html: str) -> str:
 manifest_rows = []  # populated during fetch actions
 
 def action_fetch_xhtml(target, source, env):
-    data = source[0].get_value()  # dict {'card_url','title_guess'}
-    card_url = data['card_url']
-    title_guess = data['title_guess']
+    # Value nodes stringify to their stored Python object representation; we stored a dict.
+    raw = str(source[0])
+    # Safely parse: try json first, else fallback to literal_eval.
+    data = None
+    try:
+        data = json.loads(raw.replace("'", '"')) if raw.startswith('{') else None
+    except Exception:
+        data = None
+    if data is None:
+        try:
+            import ast
+            data = ast.literal_eval(raw)
+        except Exception:
+            raise RuntimeError(f"Unable to parse source Value for XHTML fetch: {raw}")
+    card_url = data.get('card_url')
+    title_guess = data.get('title_guess')
     time.sleep(REQUEST_DELAY_SEC)
     title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
     if not xhtml_url:
@@ -198,7 +211,7 @@ Manifest = env.Command(str(MANIFEST), xhtml_targets, Action(action_write_manifes
 
 Default([AuthorPage, Metadata] + xhtml_targets + ([Manifest] if Manifest else []))
 
-print(f"Phase summary: author_page={'yes' if RAW_AUTHOR.exists() else 'no'}, metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)}")
+print(f"Phase summary: author_page={'yes' if RAW_AUTHOR.exists() else 'no'}, metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)})")
 if LIST_ONLY:
     if not meta_data:
         print("LIST=1: No metadata yet. Run once without LIST=1 to generate metadata.")
