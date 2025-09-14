@@ -21,7 +21,11 @@ RUN apt update && \
     rm -rf /var/lib/apt/lists/*
 
 # For VSCode
-RUN adduser --disabled-password --gecos "" vscode && adduser vscode sudo
+RUN adduser --disabled-password --gecos "" vscode && adduser vscode sudo && \
+    # Not mandatory but conventional
+    mkdir -p /workspace && chown vscode:vscode /workspace && \
+    # sudo without password
+    echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/nopasswd
 
 ARG WORKSPACE_FOLDER
 
@@ -35,7 +39,11 @@ RUN mkdir -p /nix && \
     chown vscode:vscode /nix && \    
     chmod 0755 /nix
 
+ENV EDITOR="vi"
+
 USER vscode
+
+ENV EDITOR="vi"
 
 ENV PATH="/home/vscode/.nix-profile/bin:$PATH"
 # Path the argument as an environment variable
