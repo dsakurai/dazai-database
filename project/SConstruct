@@ -29,24 +29,6 @@ def ensure_dirs():
     for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR]:
         p.mkdir(parents=True, exist_ok=True)
 
-def fix_mojibake(s: str) -> str:
-    if not s:
-        return s
-    def has_jp(txt):
-        return bool(re.search(r'[\u3040-\u30FF\u4E00-\u9FAF]', txt))
-    if has_jp(s):
-        return s
-    cands = []
-    for enc_from, enc_to in [('latin-1','utf-8'), ('latin-1','cp932'), ('cp932','utf-8')]:
-        try:
-            cands.append(s.encode(enc_from).decode(enc_to))
-        except Exception:
-            pass
-    for c in cands:
-        if has_jp(c):
-            return c
-    return s
-
 # -------- Phase 1: Fetch author page (parse time) with local cache & build metadata list --------
 CACHE_DIR = Path("out/cache")
 CACHE_AUTHOR = CACHE_DIR / author_file
@@ -106,10 +88,11 @@ env.Append(BUILDERS={'MetadataBuilder': MetadataBuilder})
 Metadata = env.MetadataBuilder(str(METADATA_JSON), env.Value(json.dumps(metadata_list, ensure_ascii=False, indent=2)))
 
 # Helper to fetch card page and extract XHTML link
-def extract_xhtml_from_card(card_url: str):
+def extract_xhtml_info_from_card(card_url: str):
     r = requests.get(card_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, 'html.parser')
+    xhtml_content = r.content.decode('utf-8')
+    soup = BeautifulSoup(xhtml_content, 'html.parser')
     title = soup.select_one('h1').get_text(strip=True) if soup.select_one('h1') else ''
     link = None; enc=None
     for tr in soup.find_all('tr'):
@@ -133,8 +116,6 @@ def normalize_meta_charset(html: str) -> str:
         html2 = re.sub(r'<head(.*?)>', r'<head\1><meta charset="UTF-8">', html2, count=1, flags=re.IGNORECASE)
     return html2
 
-manifest_rows = []  # populated during conversion actions
-
 def action_fetch_xhtml_raw(target, source, env):
     """Download raw XHTML bytes (no decoding) from card page-discovered link."""
     meta = source[0].read()  # {'card_url','title_guess'}
@@ -143,7 +124,7 @@ def action_fetch_xhtml_raw(target, source, env):
 
     # Sleep to avoid hammering server too fast
     time.sleep(REQUEST_DELAY_SEC)
-    title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
+    title_card, xhtml_url, enc_hint = extract_xhtml_info_from_card(card_url)
     if not xhtml_url:
         msg = f"No XHTML link found for card page: {card_url} (parsed title='{title_card}')"
         raise RuntimeError(msg)
@@ -197,11 +178,7 @@ def action_convert_xhtml(target, source, env):
         elif 'encoding' not in first_line.lower():
             first_line_new = first_line.rstrip('?>') + ' encoding="UTF-8"?>'
             decoded = first_line_new + ''.join(rest)
-    final_title = fix_mojibake(title_card or title_guess)
     Path(str(target[0])).write_text(decoded, encoding='utf-8')
-    m_id = re.search(r'card(\d+)\.html', card_url or '')
-    card_id = m_id.group(1) if m_id else 'unknown'
-    manifest_rows.append([card_id, final_title, meta.get('xhtml_url',''), str(target[0]), enc_hint or ''])
     return None
 
 FetchXHTMLRaw = Builder(action=Action(action_fetch_xhtml_raw, cmdstr="RAW ${SOURCE} -> ${TARGET}"))
