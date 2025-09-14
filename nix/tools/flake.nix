@@ -17,6 +17,8 @@
     in pkgs.mkShell {
       buildInputs = with pkgs; [
         python312 # nix' python
+        
+        jq
 
         poetry # <- Uses Nix's system default python by default
       ];

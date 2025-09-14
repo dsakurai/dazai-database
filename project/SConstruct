@@ -237,3 +237,83 @@ DefaultCSS = env.Command('out/xhtml/cards/default.css', [], Action(action_fetch_
 
 # Re-register default including CSS fetch stamp (keeps earlier Default intact if already executed)
 Default([DefaultCSS])
+
+
+def action_build_rag(target, source, env):
+    """Build RAG embeddings using a local model."""
+
+import os, glob, hashlib
+import llm, sqlite_utils
+
+# list registered models (including ollama ones if plugin installed)
+for m in llm.get_models():
+    print("repr:", repr(m), "| id:", m.model_id)
+
+model = llm.get_model("llama3:latest")
+response = model.prompt("Hello?")
+
+# For RAG, we use a local Ollama model
+EMBED_MODEL_ID = "bge-m3:latest"
+
+db = sqlite_utils.Database("out/aozora-rag.db")
+# If the collection already exists, you can omit model_id/model=
+collection = llm.Collection(
+    "dazai_works",
+    db,
+    model_id=EMBED_MODEL_ID,  # or: model=llm.get_embedding_model(EMBED_MODEL_ID)
+)
+
+DATA_DIR = "./out/xhtml/cards/000035/files"
+paths = sorted(glob.glob(os.path.join(DATA_DIR, "**", "*.html"), recursive=True))
+
+def split_ja(text: str, max_chars=800, overlap=120):
+    # simple sentence/paragraph-ish splitter for JP
+    seps = ["\n\n", "。\n", "。", "\n"]
+    chunks = [text]
+    for sep in seps:
+        tmp = []
+        for t in chunks:
+            tmp.extend([x for x in t.split(sep) if x])
+        chunks = tmp
+    # recombine into ~max_chars with overlap
+    out, buf = [], ""
+    for sent in chunks:
+        if not buf:
+            buf = sent
+        elif len(buf) + len(sent) + 1 <= max_chars:
+            buf += " " + sent
+        else:
+            out.append(buf)
+            # overlap tail
+            buf = buf[-overlap:] + " " + sent if overlap else sent
+    if buf:
+        out.append(buf)
+    return out
+
+def normalize(s: str) -> str:
+    # light cleanup—tweak as you like
+    return s.replace("\r\n", "\n").strip()
+
+entries = []
+for p in paths:
+    rel = os.path.relpath(p, DATA_DIR).replace(os.sep, "/")
+    with open(p, "r", encoding="utf-8") as f:
+        text = normalize(f.read())
+    for i, chunk in enumerate(split_ja(text)):
+        # Stable ID: file path + chunk index + hash—avoids duplicates if rerun
+        h = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:10]
+        _id = f"aozora/{rel}#{i}-{h}"
+        entries.append((_id, chunk))
+
+from tqdm import tqdm
+
+# 3) Embed & store (bulk). store=True keeps original text in DB (handy for RAG)
+#    Tune batch_size if you hit memory limits; defaults to 100. 
+collection.embed_multi(tqdm(entries), store=True,
+                    #    batch_size=50
+                       )
+
+print("✅ Indexed:", len(entries), "chunks into SQLite")
+
+
+print(response.text())
