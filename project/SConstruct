@@ -2,235 +2,207 @@
 # Fetch all Osamu Dazai (person 35) works as XHTML from Aozora Bunko.
 # Outputs to out/xhtml/*.html and out/manifest.csv
 
-import os, time, re, csv
-from urllib.parse import urljoin
+import os, time, re, json, csv
 from pathlib import Path
+from urllib.parse import urljoin
 
-# Config
-AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
-OUT_DIR = Path("out/xhtml")
-MANIFEST = Path("out/manifest.csv")
-REQUEST_DELAY_SEC = 0.6   # be polite to the server
-USER_AGENT = "SCons-Dazai-XHTML/1.0 (+for academic use; contact if needed)"
-
-# Lazy imports (SCons runs Python)
 import requests
 from bs4 import BeautifulSoup
 
-env = Environment(ENV = {'PATH': os.environ.get('PATH', '')})
+# ---------------- Config ----------------
+AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
+RAW_DIR = Path("out/raw")
+RAW_AUTHOR = RAW_DIR / "person35.html"
+OUT_XHTML_DIR = Path("out/xhtml")
+METADATA_JSON = Path("out/cards_metadata.json")
+MANIFEST = Path("out/manifest.csv")
+REQUEST_DELAY_SEC = float(os.environ.get("REQUEST_DELAY_SEC", "0.6"))
+USER_AGENT = "SCons-Dazai-XHTML/2.0 (+academic use)"
+LIST_ONLY = os.environ.get("LIST") == "1"  # LIST=1 to list targets without downloading
 
-# Optional limit to speed up iterative development. Set environment variable
-# MAX_ITEMS=N to restrict the number of works processed (0 = no limit).
 try:
     MAX_ITEMS = int(os.environ.get("MAX_ITEMS", "0"))
 except ValueError:
     MAX_ITEMS = 0
 
-# Ensure output dirs
+env = Environment(ENV={'PATH': os.environ.get('PATH','')})
+
 def ensure_dirs():
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    for p in [RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
+        p.mkdir(parents=True, exist_ok=True)
 
-def get_soup(url):
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    r.raise_for_status()
-    # author/card pages are UTF-8; downloaded XHTML files can be Shift_JIS.
-    return BeautifulSoup(r.text, "html.parser")
-
-def list_card_urls():
-    """Return list of (title, card_url) from the author page."""
-    soup = get_soup(AUTHOR_PAGE)
-    cards = []
-    
-    # Dazai is person 35; his works are linked under /cards/000035/cardXXXX.html
-    # The author page lists works as links to .../cards/000035/cardXXXX.html or directly to files.
-    for a in soup.select('a[href*="/cards/000035/card"]'):
-        href = a.get('href')
-        if not href:
-            continue
-        title = a.get_text(strip=True)
-        url = urljoin(AUTHOR_PAGE, href)
-        cards.append((title, url))
-    # dedupe while preserving order
-    seen, uniq = set(), []
-    for t,u in cards:
-        if u not in seen:
-            uniq.append((t,u))
-            seen.add(u)
-    return uniq
-
-def extract_xhtml_info(card_url):
-    """From a card page, find the XHTML file link and encoding hint."""
-    soup = get_soup(card_url)
-    # Primary: the table under "ファイルのダウンロード" has an 'XHTMLファイル' entry.
-    link = None
-    enc = None
-    title = soup.select_one("h1").get_text(strip=True) if soup.select_one("h1") else ""
-    # Scan rows that mention 'XHTML' and 'html'
-    for tr in soup.find_all('tr'):
-        txt = tr.get_text(" ", strip=True)
-        if "XHTML" in txt:
-            a = tr.find('a')
-            if a and a.get('href') and a.get('href').endswith(".html"):
-                link = urljoin(card_url, a['href'])
-                # try to find encoding hint on the row
-                m = re.search(r'(ShiftJIS|UTF-8|JIS X 0208)', txt, re.IGNORECASE)
-                enc = m.group(1) if m else None
-                break
-    # Fallback (rare): the inline "いますぐXHTML版で読む" link points to files/...html
-    if not link:
-        a = soup.find('a', string=lambda s: s and "XHTML" in s)
-        if a and a.get('href'):
-            link = urljoin(card_url, a.get('href'))
-    return title, link, enc
-
-def slugify(s):
-    s = s.strip()
+def slugify(s: str) -> str:
+    s = (s or '').strip()
     s = re.sub(r'\s+', '_', s)
     s = re.sub(r'[^\w\- _\u3040-\u30ff\u4e00-\u9faf]', '', s)
     return s[:60] if len(s) > 60 else (s or 'untitled')
 
 def fix_mojibake(s: str) -> str:
-    """Heuristically repair common mojibake variants.
-
-    Tries these transformations (first that yields Japanese chars wins):
-    1. Interpret current code points as Latin-1 bytes -> UTF-8
-    2. Interpret as Latin-1 bytes -> cp932 (Shift_JIS superset)
-    3. Interpret as cp932 bytes -> UTF-8
-    Otherwise returns original.
-    """
     if not s:
         return s
-
-    def has_jp(txt: str) -> bool:
+    def has_jp(txt):
         return bool(re.search(r'[\u3040-\u30FF\u4E00-\u9FAF]', txt))
-
-    if has_jp(s):  # already good
+    if has_jp(s):
         return s
-
-    candidates = []
-    try:
-        candidates.append(s.encode('latin-1').decode('utf-8'))
-    except Exception:
-        pass
-    try:
-        candidates.append(s.encode('latin-1').decode('cp932'))
-    except Exception:
-        pass
-    try:
-        candidates.append(s.encode('cp932').decode('utf-8'))
-    except Exception:
-        pass
-    for cand in candidates:
-        if has_jp(cand):
-            return cand
+    cands = []
+    for enc_from, enc_to in [('latin-1','utf-8'), ('latin-1','cp932'), ('cp932','utf-8')]:
+        try:
+            cands.append(s.encode(enc_from).decode(enc_to))
+        except Exception:
+            pass
+    for c in cands:
+        if has_jp(c):
+            return c
     return s
 
-def fetch_file(target, source, env):
-    """Action: download a single XHTML file to target[0] and normalize to UTF-8.
-
-    Source is a Value node containing the URL string only (simpler / robust).
-    We heuristically detect encoding from:
-      1. Declared meta charset in first KB of content (raw bytes)
-      2. Common Japanese encodings fallback list
-    """
-    src_node = source[0]
-    # Value nodes don't expose a uniform API; str(node) yields stored value for Value.
-    url = str(src_node)
-
-    tgt = Path(str(target[0]))
+# -------- Phase 1: Fetch author page --------
+def action_fetch_author(target, source, env):
     ensure_dirs()
     time.sleep(REQUEST_DELAY_SEC)
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=60)
+    r = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
-    raw = r.content
-    # Try to extract a charset from the raw bytes (simple regex over ASCII range)
-    enc_hint = None
-    head_segment = raw[:2048].decode('ascii', errors='ignore')
-    m_meta = re.search(r'charset=([A-Za-z0-9_\-]+)', head_segment, re.IGNORECASE)
-    if m_meta:
-        enc_hint = m_meta.group(1).lower()
-
-    candidates = []
-    if enc_hint:
-        candidates.append(enc_hint)
-    # Prioritize typical Japanese encodings after any hint
-    for c in ['utf-8', 'cp932', 'shift_jis', 'euc_jp']:
-        if c not in candidates:
-            candidates.append(c)
-
-    decoded = None
-    used_enc = None
-    for enc in candidates:
-        try:
-            decoded = raw.decode(enc)
-            used_enc = enc
-            break
-        except Exception:
-            continue
-    if decoded is None:
-        # Last resort: replace errors as utf-8
-        decoded = raw.decode('utf-8', errors='replace')
-        used_enc = 'utf-8?'
-
-    # Ensure meta charset is UTF-8 (simple replacement/insertion)
-    def ensure_meta_utf8(html: str) -> str:
-        # Replace existing charset declarations
-        html2 = re.sub(r'charset=([A-Za-z0-9_\-]+)', 'charset=UTF-8', html, flags=re.IGNORECASE)
-        if 'charset=' not in html2.lower():
-            # insert in head
-            html2 = re.sub(r'<head(.*?)>', r'<head\1><meta charset="UTF-8">', html2, count=1, flags=re.IGNORECASE)
-        return html2
-
-    normalized = ensure_meta_utf8(decoded)
-    tgt.write_text(normalized, encoding='utf-8')
+    Path(str(target[0])).write_bytes(r.content)
     return None
 
-Fetch = Builder(action=Action(fetch_file, cmdstr="${SOURCE} -> ${TARGET}"))
-env.Append(BUILDERS={'Fetch': Fetch})
+FetchAuthor = Builder(action=Action(action_fetch_author, cmdstr="get-author -> ${TARGET}"))
+env.Append(BUILDERS={'FetchAuthor': FetchAuthor})
+AuthorPage = env.FetchAuthor(str(RAW_AUTHOR), [])
 
-# Discover all works
-card_list = list_card_urls()
-if MAX_ITEMS > 0:
-    card_list = card_list[:MAX_ITEMS]
-
-# For manifest
-manifest_rows = []
-
-# Create targets
-all_targets = []
-for (title, card_url) in card_list:
-    try:
-        t, xhtml_url, enc = extract_xhtml_info(card_url)
-        if not xhtml_url:
+# -------- Phase 2: Parse metadata --------
+def action_parse_metadata(target, source, env):
+    html = Path(str(source[0])).read_text(encoding='utf-8', errors='ignore')
+    soup = BeautifulSoup(html, 'html.parser')
+    rows = []
+    for a in soup.select('a[href*="/cards/000035/card"]'):
+        href = a.get('href')
+        if not href:
             continue
-        # Derive a short name using card id if present
-        m = re.search(r'card(\d+)\.html', card_url)
-        card_id = m.group(1) if m else "unknown"
-        raw_title = t or title
-        repaired_title = fix_mojibake(raw_title)
-        base = f"{card_id}_{slugify(repaired_title)}.html"
-        out_path = OUT_DIR / base
-        # Use Value node for the URL so SCons won't treat it as a file path.
-        tgt = env.Fetch(str(out_path), env.Value(xhtml_url))
-        # Record for manifest
-        manifest_rows.append([card_id, (t or title), xhtml_url, str(out_path), enc or ""])
-        all_targets.append(tgt)
-    except Exception:
-        # Skip failures but continue; partial success acceptable
-        pass
+        card_url = urljoin(AUTHOR_PAGE, href)
+        title = a.get_text(strip=True)
+        rows.append({'title_guess': title, 'card_url': card_url})
+    seen = set(); uniq=[]
+    for r in rows:
+        if r['card_url'] not in seen:
+            uniq.append(r); seen.add(r['card_url'])
+    if MAX_ITEMS>0:
+        uniq = uniq[:MAX_ITEMS]
+    Path(str(target[0])).write_text(json.dumps(uniq, ensure_ascii=False, indent=2), encoding='utf-8')
+    return None
 
-# Emit manifest as a separate target that depends on all downloads
-def write_manifest(target, source, env):
+Metadata = env.Command(str(METADATA_JSON), AuthorPage, Action(action_parse_metadata, cmdstr="parse-author -> metadata"))
+
+# Helper to fetch card page and extract XHTML link
+def extract_xhtml_from_card(card_url: str):
+    r = requests.get(card_url, headers={"User-Agent": USER_AGENT}, timeout=60)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, 'html.parser')
+    title = soup.select_one('h1').get_text(strip=True) if soup.select_one('h1') else ''
+    link = None; enc=None
+    for tr in soup.find_all('tr'):
+        txt = tr.get_text(' ', strip=True)
+        if 'XHTML' in txt:
+            a = tr.find('a')
+            if a and a.get('href') and a.get('href').endswith('.html'):
+                link = urljoin(card_url, a['href'])
+                m = re.search(r'(ShiftJIS|UTF-8|JIS X 0208)', txt, re.IGNORECASE)
+                enc = m.group(1) if m else None
+                break
+    if not link:
+        a = soup.find('a', string=lambda s: s and 'XHTML' in s)
+        if a and a.get('href'):
+            link = urljoin(card_url, a.get('href'))
+    return title, link, enc
+
+def decode_html(raw: bytes) -> str:
+    head = raw[:2048].decode('ascii', errors='ignore')
+    m = re.search(r'charset=([A-Za-z0-9_\-]+)', head, re.IGNORECASE)
+    hint = m.group(1).lower() if m else None
+    candidates = []
+    if hint:
+        candidates.append(hint)
+    for c in ['utf-8','cp932','shift_jis','euc_jp']:
+        if c not in candidates:
+            candidates.append(c)
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode('utf-8', errors='replace')
+
+def normalize_meta_charset(html: str) -> str:
+    html2 = re.sub(r'charset=([A-Za-z0-9_\-]+)', 'charset=UTF-8', html, flags=re.IGNORECASE)
+    if 'charset=' not in html2.lower():
+        html2 = re.sub(r'<head(.*?)>', r'<head\1><meta charset="UTF-8">', html2, count=1, flags=re.IGNORECASE)
+    return html2
+
+manifest_rows = []  # populated during fetch actions
+
+def action_fetch_xhtml(target, source, env):
+    data = source[0].get_value()  # dict {'card_url','title_guess'}
+    card_url = data['card_url']
+    title_guess = data['title_guess']
+    time.sleep(REQUEST_DELAY_SEC)
+    title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
+    if not xhtml_url:
+        return None
+    r = requests.get(xhtml_url, headers={"User-Agent": USER_AGENT}, timeout=60)
+    r.raise_for_status()
+    decoded = decode_html(r.content)
+    decoded = normalize_meta_charset(decoded)
+    final_title = fix_mojibake(title_card or title_guess)
+    Path(str(target[0])).write_text(decoded, encoding='utf-8')
+    m = re.search(r'card(\d+)\.html', card_url)
+    card_id = m.group(1) if m else 'unknown'
+    manifest_rows.append([card_id, final_title, xhtml_url, str(target[0]), enc_hint or ''])
+    return None
+
+FetchXHTML = Builder(action=Action(action_fetch_xhtml, cmdstr="CARD ${SOURCE} -> ${TARGET}"))
+env.Append(BUILDERS={'FetchXHTML': FetchXHTML})
+
+# Schedule XHTML targets if metadata already exists at parse time
+if METADATA_JSON.exists():
+    try:
+        meta_data = json.loads(METADATA_JSON.read_text(encoding='utf-8'))
+    except Exception:
+        meta_data = []
+else:
+    meta_data = []
+
+if MAX_ITEMS>0 and meta_data:
+    meta_data = meta_data[:MAX_ITEMS]
+
+xhtml_targets = []
+for row in meta_data:
+    card_url = row['card_url']
+    title_guess = row['title_guess']
+    m = re.search(r'card(\d+)\.html', card_url)
+    card_id = m.group(1) if m else 'unknown'
+    base = f"{card_id}_{slugify(fix_mojibake(title_guess))}.html"
+    tgt_path = OUT_XHTML_DIR / base
     ensure_dirs()
-    with MANIFEST.open("w", newline="", encoding="utf-8") as f:
+    tgt = env.FetchXHTML(str(tgt_path), env.Value({'card_url': card_url, 'title_guess': title_guess}))
+    env.Depends(tgt, Metadata)
+    xhtml_targets.append(tgt)
+
+def action_write_manifest(target, source, env):
+    ensure_dirs()
+    with MANIFEST.open('w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(["card_id","title","xhtml_url","saved_path","encoding_hint"])
         for row in manifest_rows:
             w.writerow(row)
     return None
 
-Manifest = env.Command(str(MANIFEST), [t for t in all_targets], Action(write_manifest, cmdstr="write manifest"))
+Manifest = env.Command(str(MANIFEST), xhtml_targets, Action(action_write_manifest, cmdstr="write manifest")) if xhtml_targets else []
 
-Default([t for t in all_targets] + [Manifest])
-print(f"Discovered {len(all_targets)} XHTML targets.")
+Default([AuthorPage, Metadata] + xhtml_targets + ([Manifest] if Manifest else []))
+
+print(f"Phase summary: author_page={'yes' if RAW_AUTHOR.exists() else 'no'}, metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)}")
+if LIST_ONLY:
+    if not meta_data:
+        print("LIST=1: No metadata yet. Run once without LIST=1 to generate metadata.")
+    else:
+        print("Planned XHTML targets:")
+        for t in xhtml_targets:
+            print(f"  {t[0]}")
