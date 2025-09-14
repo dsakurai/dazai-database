@@ -1,7 +1,3 @@
-#!/usr/bin/env bash
-
-set -euo pipefail
-
 Q="太宰治の小説の中に、富士山を様々な場所から見た情景が羅列される技法はなかっただろうか。"
 CONTEXT=$(llm similar dazai_works -d out/aozora-rag.db -c "$Q" \
   | jq -s '.[0:5] | map("【\(.id)】\n" + (.content // "")) | join("\n\n")')
