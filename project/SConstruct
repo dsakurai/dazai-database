@@ -120,7 +120,6 @@ def action_fetch_xhtml_raw(target, source, env):
     """Download raw XHTML bytes (no decoding) from card page-discovered link."""
     meta = source[0].read()  # {'card_url','title_guess'}
     card_url = meta['card_url']
-    title_guess = meta['title_guess']
 
     # Sleep to avoid hammering server too fast
     time.sleep(REQUEST_DELAY_SEC)
@@ -131,18 +130,6 @@ def action_fetch_xhtml_raw(target, source, env):
     r = requests.get(xhtml_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     Path(str(target[0])).write_bytes(r.content)
-    # store lightweight metadata sidecar (encoding hint & better title) for conversion stage
-    sidecar = Path(str(target[0]))
-    sidecar_meta = sidecar.with_suffix(sidecar.suffix + '.json')
-    
-    # Note that this json is not used.
-    sidecar_meta.write_text(json.dumps({
-        'card_url': card_url,
-        'xhtml_url': xhtml_url,
-        'title_guess': title_guess,
-        'title_card': title_card,
-        'enc_hint': enc_hint
-    }, ensure_ascii=False, indent=2), encoding='utf-8')
     return None
 
 def action_convert_xhtml(target, source, env):
