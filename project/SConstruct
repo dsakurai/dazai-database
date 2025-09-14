@@ -84,6 +84,10 @@ for a in _soup.select('a[href*="/cards/000035/card"]'):
     if not href:
         continue
     card_url = urljoin(AUTHOR_PAGE, href)
+    # Skip card 2276 (confirmed dead link; it's the English translation "A Tale of Honorable Poverty")
+    if 'card2276.' in card_url:
+        print('[warn] Skipping known broken card: 2276 ->', card_url)
+        continue
     # Raw text (BeautifulSoup already decoded page as UTF-8, but title text may carry mojibake if page misdeclared)
     title_raw = a.get_text(strip=True)
     # Heuristic normalization: first apply fix_mojibake; if still no Japanese chars but bytes plausible, try re-decode
@@ -117,6 +121,14 @@ Metadata = env.MetadataBuilder(str(METADATA_JSON), env.Value(json.dumps(metadata
 
 # Helper to fetch card page and extract XHTML link
 def extract_xhtml_from_card(card_url: str):
+    """Return (title, xhtml_link, encoding_hint or None).
+
+    Fallback order:
+      1. Original table-row containing 'XHTML' or full-width variant.
+      2. Anchor whose text contains 'XHTML' / 'ＸＨＴＭＬ'.
+      3. Any anchor to /files/*.html (choose shortest if multiple).
+      4. Any .html link (choose shortest) as last resort.
+    """
     r = requests.get(card_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, 'html.parser')
@@ -183,9 +195,8 @@ def action_fetch_xhtml_raw(target, source, env):
     time.sleep(REQUEST_DELAY_SEC)
     title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
     if not xhtml_url:
-        # create empty file to satisfy target to avoid re-fetch loop
-        Path(str(target[0])).write_bytes(b"")
-        return None
+        msg = f"No XHTML link found for card page: {card_url} (parsed title='{title_card}')"
+        raise RuntimeError(msg)
     r = requests.get(xhtml_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     Path(str(target[0])).write_bytes(r.content)
@@ -218,7 +229,10 @@ def action_convert_xhtml(target, source, env):
     title_guess = meta.get('title_guess')
     title_card = meta.get('title_card')
     enc_hint = meta.get('enc_hint')
+    # Guard: raw file must not be empty
     raw = raw_file.read_bytes()
+    if len(raw) == 0:
+        raise RuntimeError(f"Raw XHTML file is empty: {raw_file}")
     decoded = decode_html(raw)
     decoded = normalize_meta_charset(decoded)
     # Normalize XML declaration encoding to UTF-8 if present
