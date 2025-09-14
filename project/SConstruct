@@ -85,8 +85,19 @@ for a in _soup.select('a[href*="/cards/000035/card"]'):
     if not href:
         continue
     card_url = urljoin(AUTHOR_PAGE, href)
-    title = a.get_text(strip=True)
-    _rows.append({'title_guess': title, 'card_url': card_url})
+    # Raw text (BeautifulSoup already decoded page as UTF-8, but title text may carry mojibake if page misdeclared)
+    title_raw = a.get_text(strip=True)
+    # Heuristic normalization: first apply fix_mojibake; if still no Japanese chars but bytes plausible, try re-decode
+    norm = fix_mojibake(title_raw)
+    if norm == title_raw:
+        # attempt: encode to latin-1 bytes then decode cp932 (common mojibake path)
+        try:
+            trial = title_raw.encode('latin-1').decode('cp932')
+            if re.search(r'[\u3040-\u30FF\u4E00-\u9FAF]', trial):
+                norm = trial
+        except Exception:
+            pass
+    _rows.append({'title_guess': norm, 'card_url': card_url})
 _seen = set(); _uniq=[]
 for r in _rows:
     if r['card_url'] not in _seen:
