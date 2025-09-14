@@ -134,6 +134,8 @@ def action_fetch_xhtml_raw(target, source, env):
     # store lightweight metadata sidecar (encoding hint & better title) for conversion stage
     sidecar = Path(str(target[0]))
     sidecar_meta = sidecar.with_suffix(sidecar.suffix + '.json')
+    
+    # Note that this json is not used.
     sidecar_meta.write_text(json.dumps({
         'card_url': card_url,
         'xhtml_url': xhtml_url,
@@ -146,20 +148,6 @@ def action_fetch_xhtml_raw(target, source, env):
 def action_convert_xhtml(target, source, env):
     """Convert previously downloaded raw XHTML bytes to normalized UTF-8 HTML."""
     raw_file = Path(str(source[0]))
-    value_node = source[1]
-    meta = value_node.read()
-    # prefer sidecar for richer info
-    sidecar_meta_path = raw_file.with_suffix(raw_file.suffix + '.json')
-    if sidecar_meta_path.exists():
-        try:
-            meta_sc = json.loads(sidecar_meta_path.read_text(encoding='utf-8'))
-            meta.update(meta_sc)
-        except Exception:
-            pass
-    card_url = meta.get('card_url')
-    title_guess = meta.get('title_guess')
-    title_card = meta.get('title_card')
-    enc_hint = meta.get('enc_hint')
     # Guard: raw file must not be empty
     raw = raw_file.read_bytes()
     if len(raw) == 0:
