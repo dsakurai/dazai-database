@@ -10,11 +10,13 @@ import requests
 from bs4 import BeautifulSoup
 
 # ---------------- Config ----------------
-author_file = "person35.html"
+author_id: str = '35'
+author_file = f"person{author_id}.html"
 AUTHOR_PAGE = f"https://www.aozora.gr.jp/index_pages/{author_file}"
 OUT_XHTML_RAW_DIR = Path("out/xhtml_raw")  # newly added raw (original encoding) files
-OUT_XHTML_DIR = Path("out/xhtml")          # UTF-8 normalized outputs
+OUT_XHTML_DIR = Path(f"out/xhtml/cards/{author_id.rjust(6, '0')}/files")          # UTF-8 normalized outputs
 METADATA_JSON = Path("out/cards_metadata.json")
+CSS_DIR = Path("out/xhtml/cards")  # location for shared default.css
 REQUEST_DELAY_SEC = float(os.environ.get("REQUEST_DELAY_SEC", "0.6"))
 USER_AGENT = "SCons-Dazai-XHTML/2.0 (+academic use)"
 
@@ -26,7 +28,7 @@ except ValueError:
 env = Environment(ENV={'PATH': os.environ.get('PATH','')})
 
 def ensure_dirs():
-    for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR]:
+    for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, CSS_DIR]:
         p.mkdir(parents=True, exist_ok=True)
 
 # -------- Phase 1: Fetch author page (parse time) with local cache & build metadata list --------
@@ -214,3 +216,24 @@ ValidateUTF8Decl = env.Command('out/validate_utf8_decl.ok', xhtml_targets_as_utf
 Default([Metadata] + xhtml_targets_as_utf8 + [ValidateUTF8Decl])
 
 print(f"Phase summary: metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets_as_utf8)} (single-pass)")
+
+# ---------------- CSS (default.css) fetch (no XHTML parsing) ----------------
+# User requirement: Just ensure a default.css exists under out/xhtml/cards
+
+def action_fetch_default_css(target, source, env):
+    ensure_dirs()
+    filename = 'default.css'
+    dest = CSS_DIR / filename
+
+    r = requests.get(f"https://www.aozora.gr.jp/cards/{filename}", headers={"User-Agent": USER_AGENT}, timeout=30)
+
+    if r.status_code == 200 and r.content.strip():
+        Path(str(target[0])).write_text(r.text)
+        print(f"[css] downloaded default.css")
+
+    return None
+
+DefaultCSS = env.Command('out/xhtml/cards/default.css', [], Action(action_fetch_default_css, cmdstr='fetch default.css'))
+
+# Re-register default including CSS fetch stamp (keeps earlier Default intact if already executed)
+Default([DefaultCSS])
