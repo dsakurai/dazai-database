@@ -30,12 +30,6 @@ def ensure_dirs():
     for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
         p.mkdir(parents=True, exist_ok=True)
 
-def slugify(s: str) -> str:
-    s = (s or '').strip()
-    s = re.sub(r'\s+', '_', s)
-    s = re.sub(r'[^\w\- _\u3040-\u30ff\u4e00-\u9faf]', '', s)
-    return s[:60] if len(s) > 60 else (s or 'untitled')
-
 def fix_mojibake(s: str) -> str:
     if not s:
         return s
@@ -160,6 +154,8 @@ def normalize_meta_charset(html: str) -> str:
 manifest_rows = []  # populated during conversion actions
 
 def parse_value_dict(val_node):
+    dic = val_node.read()
+    print(type(dic), dic)
     raw = str(val_node)
     try:
         if raw.startswith('{'):
@@ -244,27 +240,29 @@ ConvertXHTML = Builder(action=Action(action_convert_xhtml, cmdstr="CONVERT ${SOU
 env.Append(BUILDERS={'FetchXHTMLRaw': FetchXHTMLRaw, 'ConvertXHTML': ConvertXHTML})
 
 meta_data = metadata_list  # direct use
-raw_targets = []
-converted_targets = []
+xhtml_targets_as_utf8 = []
 for row in meta_data:
     card_url = row['card_url']
     title_guess = row['title_guess']
     m = re.search(r'card(\d+)\.html', card_url)
     card_id = m.group(1) if m else 'unknown'
-    base = f"{card_id}_{slugify(fix_mojibake(title_guess))}.html"
-    raw_path = OUT_XHTML_RAW_DIR / base
-    final_path = OUT_XHTML_DIR / base
     ensure_dirs()
-    val = env.Value({'card_url': card_url, 'title_guess': title_guess})
-    raw_tgt = env.FetchXHTMLRaw(str(raw_path), val)
-    env.Depends(raw_tgt, Metadata)  # ensure metadata JSON is written first
-    conv_tgt = env.ConvertXHTML(str(final_path), [raw_tgt, val])
-    env.Depends(conv_tgt, raw_tgt)
-    raw_targets.append(raw_tgt)
-    converted_targets.append(conv_tgt)
+    base = f"{card_id}_{title_guess}.html"
+    
 
-# For compatibility with existing code, treat converted targets as xhtml_targets
-xhtml_targets = converted_targets
+    url_and_title = env.Value({'card_url': card_url, 'title_guess': title_guess})
+
+    xhtml_raw = env.FetchXHTMLRaw(
+            (OUT_XHTML_RAW_DIR/base).as_posix(),
+            url_and_title
+            )
+    env.Depends(xhtml_raw, Metadata)  # ensure metadata JSON is written first
+    xhtml_utf8 = env.ConvertXHTML(
+            (OUT_XHTML_DIR/base).as_posix(), 
+            [xhtml_raw, url_and_title])
+    env.Depends(xhtml_utf8, xhtml_raw)
+
+    xhtml_targets_as_utf8.append(xhtml_utf8)
 
 def action_write_manifest(target, source, env):
     ensure_dirs()
@@ -275,7 +273,7 @@ def action_write_manifest(target, source, env):
             w.writerow(row)
     return None
 
-Manifest = env.Command(str(MANIFEST), xhtml_targets, Action(action_write_manifest, cmdstr="write manifest")) if xhtml_targets else []
+Manifest = env.Command(str(MANIFEST), xhtml_targets_as_utf8, Action(action_write_manifest, cmdstr="write manifest"))
 
 # ---------------- Validation: ensure UTF-8 XML declaration ----------------
 def action_validate_utf8_decl(target, source, env):
@@ -303,8 +301,8 @@ def action_validate_utf8_decl(target, source, env):
     Path(str(target[0])).write_text('ok', encoding='utf-8')
     return None
 
-ValidateUTF8Decl = env.Command('out/validate_utf8_decl.ok', xhtml_targets, Action(action_validate_utf8_decl, cmdstr="validate utf8 decl")) if xhtml_targets else []
+ValidateUTF8Decl = env.Command('out/validate_utf8_decl.ok', xhtml_targets_as_utf8, Action(action_validate_utf8_decl, cmdstr="validate utf8 decl")) if xhtml_targets_as_utf8 else []
 
-Default([Metadata] + xhtml_targets + ([Manifest] if Manifest else []) + ([ValidateUTF8Decl] if ValidateUTF8Decl else []))
+Default([Metadata] + xhtml_targets_as_utf8 + ([Manifest] if Manifest else []) + ([ValidateUTF8Decl] if ValidateUTF8Decl else []))
 
-print(f"Phase summary: metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)} (single-pass)")
+print(f"Phase summary: metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets_as_utf8)} (single-pass)")
