@@ -1,7 +1,7 @@
 {
-    "name": "Dev Container",
+    "name": "Dev Container Project Name",
     "build": {
-      "dockerfile": "Dockerfile",
+      "dockerfile": "Containerfile",
       "args": {
         "WORKSPACE_FOLDER": "/workspace" // Pass the workspace folder to the container
       }
@@ -20,18 +20,10 @@
         "--security-opt", "seccomp=unconfined", // For WSL2 which has tighter security
         "--device", "nvidia.com/gpu=all",       // NVIDIA GPU
 
-        "--volume=${localWorkspaceFolder}/nix-store:/nix/store:z" // mount the nix storage
-
-        // X11
-        // NOT WORKING. Check out Toolbox: https://github.com/containers/toolbox/issues/610
-        // "--uidmap", "1000:0:1",
-        // "--uidmap", "0:1:1000",
-        // "-e", "DISPLAY",
-        // "--net=host",
-        // "--volume=${localEnv:XAUTHORITY}:/home/vscode/.Xauthority:Z"
+        "--volume=${localWorkspaceFolder}/nix/nix-store:/nix/store:z" // mount the nix storage
     ],
 
-    // Install nix
+    // Post-create command to run after the container is created.
     "postCreateCommand": ".devcontainer/postCreate.sh",
 
     "features": {

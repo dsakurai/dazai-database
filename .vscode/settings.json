@@ -1,6 +1,6 @@
 {
     "python.analysis.exclude": [
-        "${workspaceFolder}/nix-store",
+        "/workspace/nix/nix-store",
         ".venv",
         ".git",
         "**/__pycache__"

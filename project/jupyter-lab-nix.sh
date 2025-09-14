@@ -5,4 +5,4 @@ set -e
 cd "$WORKSPACE_FOLDER"
 
 # Run jupyter lab through nix-develop
-./nix-scripts/nix-develop.sh --command bash -c 'jupyter lab --no-browser'
+./nix/tools/nix-develop.sh --command bash -c 'jupyter lab --no-browser'

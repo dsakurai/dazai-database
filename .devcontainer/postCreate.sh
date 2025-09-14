@@ -15,4 +15,4 @@ if [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
 fi
 
 cd project # enter the project folder
-../nix-scripts/nix-develop.sh # Install necessary packages from nix and set up environment variables
+../nix/tools/nix-develop.sh # Install necessary packages from nix and set up environment variables
