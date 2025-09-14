@@ -10,7 +10,8 @@ import requests
 from bs4 import BeautifulSoup
 
 # ---------------- Config ----------------
-AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
+author_file = "person35.html"
+AUTHOR_PAGE = f"https://www.aozora.gr.jp/index_pages/{author_file}"
 OUT_XHTML_RAW_DIR = Path("out/xhtml_raw")  # newly added raw (original encoding) files
 OUT_XHTML_DIR = Path("out/xhtml")          # UTF-8 normalized outputs
 METADATA_JSON = Path("out/cards_metadata.json")
@@ -55,7 +56,7 @@ def fix_mojibake(s: str) -> str:
 
 # -------- Phase 1: Fetch author page (parse time) with local cache & build metadata list --------
 CACHE_DIR = Path("out/cache")
-CACHE_AUTHOR = CACHE_DIR / "person35.html"
+CACHE_AUTHOR = CACHE_DIR / author_file
 REFRESH_AUTHOR = os.environ.get("REFRESH_AUTHOR") == "1"
 
 def fetch_author_html() -> tuple[str, bool]:
