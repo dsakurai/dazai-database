@@ -153,26 +153,13 @@ def normalize_meta_charset(html: str) -> str:
 
 manifest_rows = []  # populated during conversion actions
 
-def parse_value_dict(val_node):
-    dic = val_node.read()
-    print(type(dic), dic)
-    raw = str(val_node)
-    try:
-        if raw.startswith('{'):
-            return json.loads(raw.replace("'", '"'))
-    except Exception:
-        pass
-    try:
-        import ast
-        return ast.literal_eval(raw)
-    except Exception:
-        raise RuntimeError(f"Unable to parse Value node: {raw}")
-
 def action_fetch_xhtml_raw(target, source, env):
     """Download raw XHTML bytes (no decoding) from card page-discovered link."""
-    meta = parse_value_dict(source[0])  # {'card_url','title_guess'}
+    meta = source[0].read()  # {'card_url','title_guess'}
     card_url = meta['card_url']
     title_guess = meta['title_guess']
+
+    # Sleep to avoid hammering server too fast
     time.sleep(REQUEST_DELAY_SEC)
     title_card, xhtml_url, enc_hint = extract_xhtml_from_card(card_url)
     if not xhtml_url:
@@ -197,7 +184,7 @@ def action_convert_xhtml(target, source, env):
     """Convert previously downloaded raw XHTML bytes to normalized UTF-8 HTML."""
     raw_file = Path(str(source[0]))
     value_node = source[1]
-    meta = parse_value_dict(value_node)
+    meta = value_node.read()
     # prefer sidecar for richer info
     sidecar_meta_path = raw_file.with_suffix(raw_file.suffix + '.json')
     if sidecar_meta_path.exists():
