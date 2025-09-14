@@ -58,15 +58,23 @@ CACHE_DIR = Path("out/cache")
 CACHE_AUTHOR = CACHE_DIR / "person35.html"
 REFRESH_AUTHOR = os.environ.get("REFRESH_AUTHOR") == "1"
 
-def fetch_author_html():
+def fetch_author_html() -> tuple[str, bool]:
+    _from_cache = False
     if CACHE_AUTHOR.exists() and not REFRESH_AUTHOR:
-        return CACHE_AUTHOR.read_text(encoding='latin-1'), True
+        bytes = CACHE_AUTHOR.read_bytes()
+        _from_cache = True
+
     print("[parse] Downloading author page ...")
     r = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_AUTHOR.write_text(r.text, encoding='latin-1')
-    return r.text, False
+    CACHE_AUTHOR.write_bytes(r.content)
+    
+    bytes = r.content
+    
+    html_in_utf8: str = bytes.decode("utf-8")
+    
+    return html_in_utf8, _from_cache
 
 _author_html, _from_cache = fetch_author_html()
 print(f"[parse] Author page source: {'cache' if _from_cache else 'network'}")
