@@ -94,21 +94,19 @@ def extract_xhtml_info_from_card(card_url: str):
     xhtml_content = r.content.decode('utf-8')
     soup = BeautifulSoup(xhtml_content, 'html.parser')
     title = soup.select_one('h1').get_text(strip=True) if soup.select_one('h1') else ''
-    link = None; enc=None
+    link = None
     for tr in soup.find_all('tr'):
         txt = tr.get_text(' ', strip=True)
         if 'XHTML' in txt:
             a = tr.find('a')
             if a and a.get('href') and a.get('href').endswith('.html'):
                 link = urljoin(card_url, a['href'])
-                m = re.search(r'(ShiftJIS|UTF-8|JIS X 0208)', txt, re.IGNORECASE)
-                enc = m.group(1) if m else None
                 break
     if not link:
         a = soup.find('a', string=lambda s: s and 'XHTML' in s)
         if a and a.get('href'):
             link = urljoin(card_url, a.get('href'))
-    return title, link, enc
+    return title, link
 
 def normalize_meta_charset(html: str) -> str:
     html2 = re.sub(r'charset=([A-Za-z0-9_\-]+)', 'charset=UTF-8', html, flags=re.IGNORECASE)
@@ -123,7 +121,7 @@ def action_fetch_xhtml_raw(target, source, env):
 
     # Sleep to avoid hammering server too fast
     time.sleep(REQUEST_DELAY_SEC)
-    title_card, xhtml_url, enc_hint = extract_xhtml_info_from_card(card_url)
+    title_card, xhtml_url = extract_xhtml_info_from_card(card_url)
     if not xhtml_url:
         msg = f"No XHTML link found for card page: {card_url} (parsed title='{title_card}')"
         raise RuntimeError(msg)
