@@ -11,8 +11,6 @@ from bs4 import BeautifulSoup
 
 # ---------------- Config ----------------
 AUTHOR_PAGE = "https://www.aozora.gr.jp/index_pages/person35.html"
-RAW_DIR = Path("out/raw")
-RAW_AUTHOR = RAW_DIR / "person35.html"
 OUT_XHTML_RAW_DIR = Path("out/xhtml_raw")  # newly added raw (original encoding) files
 OUT_XHTML_DIR = Path("out/xhtml")          # UTF-8 normalized outputs
 METADATA_JSON = Path("out/cards_metadata.json")
@@ -29,7 +27,7 @@ except ValueError:
 env = Environment(ENV={'PATH': os.environ.get('PATH','')})
 
 def ensure_dirs():
-    for p in [RAW_DIR, OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
+    for p in [OUT_XHTML_RAW_DIR, OUT_XHTML_DIR, MANIFEST.parent]:
         p.mkdir(parents=True, exist_ok=True)
 
 def slugify(s: str) -> str:
@@ -56,41 +54,41 @@ def fix_mojibake(s: str) -> str:
             return c
     return s
 
-# -------- Phase 1: Fetch author page --------
-def action_fetch_author(target, source, env):
-    ensure_dirs()
-    time.sleep(REQUEST_DELAY_SEC)
-    r = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
-    r.raise_for_status()
-    Path(str(target[0])).write_bytes(r.content)
+# -------- Phase 1: Fetch author page (parse time, not a target) & build metadata list --------
+print("[parse] Fetching author page for metadata enumeration ...")
+try:
+    _resp_author = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
+    _resp_author.raise_for_status()
+    _author_html = _resp_author.text
+except Exception as e:
+    raise RuntimeError(f"Unable to fetch author page: {e}")
+
+_soup = BeautifulSoup(_author_html, 'html.parser')
+_rows = []
+for a in _soup.select('a[href*="/cards/000035/card"]'):
+    href = a.get('href')
+    if not href:
+        continue
+    card_url = urljoin(AUTHOR_PAGE, href)
+    title = a.get_text(strip=True)
+    _rows.append({'title_guess': title, 'card_url': card_url})
+_seen = set(); _uniq=[]
+for r in _rows:
+    if r['card_url'] not in _seen:
+        _uniq.append(r); _seen.add(r['card_url'])
+if MAX_ITEMS>0:
+    _uniq = _uniq[:MAX_ITEMS]
+metadata_list = _uniq
+
+# Builder to write metadata JSON from parse-time list
+def action_write_metadata(target, source, env):
+    data_json = str(source[0])
+    Path(str(target[0])).write_text(data_json, encoding='utf-8')
     return None
 
-FetchAuthor = Builder(action=Action(action_fetch_author, cmdstr="get-author -> ${TARGET}"))
-env.Append(BUILDERS={'FetchAuthor': FetchAuthor})
-AuthorPage = env.FetchAuthor(str(RAW_AUTHOR), [])
-
-# -------- Phase 2: Parse metadata --------
-def action_parse_metadata(target, source, env):
-    html = Path(str(source[0])).read_text(encoding='utf-8', errors='ignore')
-    soup = BeautifulSoup(html, 'html.parser')
-    rows = []
-    for a in soup.select('a[href*="/cards/000035/card"]'):
-        href = a.get('href')
-        if not href:
-            continue
-        card_url = urljoin(AUTHOR_PAGE, href)
-        title = a.get_text(strip=True)
-        rows.append({'title_guess': title, 'card_url': card_url})
-    seen = set(); uniq=[]
-    for r in rows:
-        if r['card_url'] not in seen:
-            uniq.append(r); seen.add(r['card_url'])
-    if MAX_ITEMS>0:
-        uniq = uniq[:MAX_ITEMS]
-    Path(str(target[0])).write_text(json.dumps(uniq, ensure_ascii=False, indent=2), encoding='utf-8')
-    return None
-
-Metadata = env.Command(str(METADATA_JSON), AuthorPage, Action(action_parse_metadata, cmdstr="parse-author -> metadata"))
+MetadataBuilder = Builder(action=Action(action_write_metadata, cmdstr="write-metadata -> ${TARGET}"))
+env.Append(BUILDERS={'MetadataBuilder': MetadataBuilder})
+Metadata = env.MetadataBuilder(str(METADATA_JSON), env.Value(json.dumps(metadata_list, ensure_ascii=False, indent=2)))
 
 # Helper to fetch card page and extract XHTML link
 def extract_xhtml_from_card(card_url: str):
@@ -209,18 +207,7 @@ FetchXHTMLRaw = Builder(action=Action(action_fetch_xhtml_raw, cmdstr="RAW ${SOUR
 ConvertXHTML = Builder(action=Action(action_convert_xhtml, cmdstr="CONVERT ${SOURCES} -> ${TARGET}"))
 env.Append(BUILDERS={'FetchXHTMLRaw': FetchXHTMLRaw, 'ConvertXHTML': ConvertXHTML})
 
-# Schedule XHTML targets if metadata already exists at parse time
-if METADATA_JSON.exists():
-    try:
-        meta_data = json.loads(METADATA_JSON.read_text(encoding='utf-8'))
-    except Exception:
-        meta_data = []
-else:
-    meta_data = []
-
-if MAX_ITEMS>0 and meta_data:
-    meta_data = meta_data[:MAX_ITEMS]
-
+meta_data = metadata_list  # direct use
 raw_targets = []
 converted_targets = []
 for row in meta_data:
@@ -234,7 +221,7 @@ for row in meta_data:
     ensure_dirs()
     val = env.Value({'card_url': card_url, 'title_guess': title_guess})
     raw_tgt = env.FetchXHTMLRaw(str(raw_path), val)
-    env.Depends(raw_tgt, Metadata)
+    env.Depends(raw_tgt, Metadata)  # ensure metadata JSON is written first
     conv_tgt = env.ConvertXHTML(str(final_path), [raw_tgt, val])
     env.Depends(conv_tgt, raw_tgt)
     raw_targets.append(raw_tgt)
@@ -254,9 +241,9 @@ def action_write_manifest(target, source, env):
 
 Manifest = env.Command(str(MANIFEST), xhtml_targets, Action(action_write_manifest, cmdstr="write manifest")) if xhtml_targets else []
 
-Default([AuthorPage, Metadata] + xhtml_targets + ([Manifest] if Manifest else []))
+Default([Metadata] + xhtml_targets + ([Manifest] if Manifest else []))
 
-print(f"Phase summary: author_page={'yes' if RAW_AUTHOR.exists() else 'no'}, metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)})")
+print(f"Phase summary: metadata_entries={len(meta_data)}, xhtml_targets={len(xhtml_targets)} (single-pass)")
 if LIST_ONLY:
     if not meta_data:
         print("LIST=1: No metadata yet. Run once without LIST=1 to generate metadata.")

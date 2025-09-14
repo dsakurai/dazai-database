@@ -28,4 +28,5 @@ scons
 This first downloads the html page for Osamu Dazai on the Aozora bunko webpage. In order to update this one, and thus all the files that depend on this one, remove this file:
 ```
 rm out/raw/person35.html
+scons
 ```
