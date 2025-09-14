@@ -60,18 +60,12 @@ REFRESH_AUTHOR = os.environ.get("REFRESH_AUTHOR") == "1"
 
 def fetch_author_html():
     if CACHE_AUTHOR.exists() and not REFRESH_AUTHOR:
-        try:
-            return CACHE_AUTHOR.read_text(encoding='utf-8', errors='ignore'), True
-        except Exception:
-            pass
+        return CACHE_AUTHOR.read_text(encoding='latin-1'), True
     print("[parse] Downloading author page ...")
     r = requests.get(AUTHOR_PAGE, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        CACHE_AUTHOR.write_text(r.text, encoding='utf-8')
-    except Exception:
-        pass
+    CACHE_AUTHOR.write_text(r.text, encoding='latin-1')
     return r.text, False
 
 _author_html, _from_cache = fetch_author_html()
@@ -90,17 +84,7 @@ for a in _soup.select('a[href*="/cards/000035/card"]'):
         continue
     # Raw text (BeautifulSoup already decoded page as UTF-8, but title text may carry mojibake if page misdeclared)
     title_raw = a.get_text(strip=True)
-    # Heuristic normalization: first apply fix_mojibake; if still no Japanese chars but bytes plausible, try re-decode
-    norm = fix_mojibake(title_raw)
-    if norm == title_raw:
-        # attempt: encode to latin-1 bytes then decode cp932 (common mojibake path)
-        try:
-            trial = title_raw.encode('latin-1').decode('cp932')
-            if re.search(r'[\u3040-\u30FF\u4E00-\u9FAF]', trial):
-                norm = trial
-        except Exception:
-            pass
-    _rows.append({'title_guess': norm, 'card_url': card_url})
+    _rows.append({'title_guess': title_raw, 'card_url': card_url})
 _seen = set(); _uniq=[]
 for r in _rows:
     if r['card_url'] not in _seen:
@@ -121,14 +105,6 @@ Metadata = env.MetadataBuilder(str(METADATA_JSON), env.Value(json.dumps(metadata
 
 # Helper to fetch card page and extract XHTML link
 def extract_xhtml_from_card(card_url: str):
-    """Return (title, xhtml_link, encoding_hint or None).
-
-    Fallback order:
-      1. Original table-row containing 'XHTML' or full-width variant.
-      2. Anchor whose text contains 'XHTML' / 'ＸＨＴＭＬ'.
-      3. Any anchor to /files/*.html (choose shortest if multiple).
-      4. Any .html link (choose shortest) as last resort.
-    """
     r = requests.get(card_url, headers={"User-Agent": USER_AGENT}, timeout=60)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, 'html.parser')
