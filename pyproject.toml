@@ -10,5 +10,7 @@ requires-python = "^3.12"
 dependencies = [
     "scons (>=4.9.1,<5.0.0)",
     "requests (>=2.32.5,<3.0.0)",
-    "beautifulsoup4 (>=4.13.5,<5.0.0)"
+    "beautifulsoup4 (>=4.13.5,<5.0.0)",
+    "llm (>=0.27.1,<0.28.0)",
+    "llm-ollama (>=0.14.0,<0.15.0)"
 ]
