@@ -1,10 +1,12 @@
-Q="太宰治の小説の中に、富士山を様々な場所から見た情景が羅列される技法はなかっただろうか。"
-CONTEXT=$(llm similar dazai_works -d out/aozora-rag.db -c "$Q" \
+Q="著者が東京について語った部分を教えてください。"
+CONTEXT=$(llm similar dazai_works -n 30 -d out/aozora-rag.db -c "$Q" \
   | jq -s '.[0:5] | map("【\(.id)】\n" + (.content // "")) | join("\n\n")')
 
-# 2) Generate with an Ollama model
-llm -m "llama3:latest" \
-  --system "次の文脈を根拠に日本語で簡潔に答え、それが載っているhtmlファイル名を示してください。" \
-  "$CONTEXT
+echo "RAG:"
+echo "$CONTEXT"
+echo "\n\n"
 
-質問: $Q"
+# 2) Generate with an Ollama model
+echo "llm:"
+llm -m "llama3:latest" \
+  --system "次の文脈を根拠に日本語で簡潔に答え、それが載っているhtmlファイル名を示してください：$CONTEXT" "質問: $Q"
