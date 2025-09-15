@@ -268,7 +268,7 @@ paths = sorted(glob.glob(os.path.join(DATA_DIR, "**", "*.html"), recursive=True)
 
 def split_ja(text: str, max_chars=800, overlap=120):
     # simple sentence/paragraph-ish splitter for JP
-    seps = ["\n\n", "。\n", "。", "\n"]
+    seps = ["\n\n", "。\n", "。", "\n", "<br>", "<br/>", "<br />"]
     chunks = [text]
     for sep in seps:
         tmp = []
