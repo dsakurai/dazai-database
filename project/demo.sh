@@ -1,3 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
 Q="著者が東京について語った部分を教えてください。"
 CONTEXT=$(llm similar dazai_works -n 30 -d out/aozora-rag.db -c "$Q" \
   | jq -s '.[0:5] | map("【\(.id)】\n" + (.content // "")) | join("\n\n")')
